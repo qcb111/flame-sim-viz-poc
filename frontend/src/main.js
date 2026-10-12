@@ -21,7 +21,10 @@ const paramShort = {
 
 let schema = null;
 let combos = [];
-const selected = {}; // param -> explicit user pick (number); undefined = "any"
+const selected = {};   // param -> explicit user pick (number); undefined = "any"
+let currentCombo = null; // the pinned unique case, or null
+let route = 'contour';
+let profileJ = 44;
 let renderSeq = 0;
 
 async function load() {
@@ -32,6 +35,8 @@ async function load() {
   schema = s;
   combos = p.combinations;
   buildControls();
+  initSlider();
+  setupRouter();
   sync();
 }
 
@@ -48,7 +53,7 @@ function buildControls() {
     if (v.name === 'Temperature') o.selected = true;
     varSel.appendChild(o);
   }
-  varSel.addEventListener('change', () => sync());
+  varSel.addEventListener('change', () => { if (currentCombo) renderActive(); });
   controls.appendChild(wrap('Field', varSel));
 
   for (const p of paramOrder) {
@@ -85,6 +90,36 @@ function wrap(label, el) {
   return d;
 }
 
+function initSlider() {
+  const slider = document.getElementById('y-slider');
+  slider.max = String(schema.ny - 1);
+  slider.value = String(profileJ);
+  slider.addEventListener('input', () => {
+    profileJ = Number(slider.value);
+    updateYLabel();
+    if (currentCombo && route === 'profile') renderProfile(currentCombo, profileJ);
+  });
+  updateYLabel();
+}
+
+function updateYLabel() {
+  document.getElementById('y-value').textContent =
+    schema ? `y = ${fmt(schema.y[profileJ])} m` : 'y = — m';
+}
+
+function setupRouter() {
+  const apply = () => {
+    route = location.hash.startsWith('#/profile') ? 'profile' : 'contour';
+    document.getElementById('view-contour').classList.toggle('active', route === 'contour');
+    document.getElementById('view-profile').classList.toggle('active', route === 'profile');
+    document.getElementById('tab-contour').classList.toggle('active', route === 'contour');
+    document.getElementById('tab-profile').classList.toggle('active', route === 'profile');
+    renderActive();
+  };
+  window.addEventListener('hashchange', apply);
+  apply();
+}
+
 function availableValues(p) {
   const others = paramOrder.filter(o => o !== p);
   const filtered = combos.filter(c => others.every(o => selected[o] === undefined || c[o] === selected[o]));
@@ -95,8 +130,6 @@ function matching() {
   return combos.filter(c => paramOrder.every(p => selected[p] === undefined || c[p] === selected[p]));
 }
 
-// Rebuild every dropdown, auto-fill any dropdown whose value is uniquely determined
-// by the current selections, and render the plot only when exactly one case matches.
 function sync() {
   const m = matching();
 
@@ -114,32 +147,58 @@ function sync() {
       o.textContent = v;
       sel.appendChild(o);
     }
-    if (selected[p] !== undefined) sel.value = String(selected[p]);  // explicit pick
-    else if (vals.length === 1) sel.value = String(vals[0]);         // uniquely determined → auto-fill (display only)
-    else sel.value = '';                                             // any
+    if (selected[p] !== undefined) sel.value = String(selected[p]);
+    else if (vals.length === 1) sel.value = String(vals[0]);
+    else sel.value = '';
   }
 
+  const slider = document.getElementById('y-slider');
   if (m.length === 1) {
-    render(m[0]);
-  } else if (m.length === 0) {
-    clearPlot('No case matches the selected parameters.');
+    currentCombo = m[0];
+    slider.disabled = false;
+    renderActive();
   } else {
-    clearPlot(`Select condition parameters to pin a unique case (currently ${m.length} matches).`);
+    currentCombo = null;
+    slider.disabled = true;
+    if (m.length === 0) clearAll('No case matches the selected parameters.');
+    else clearAll(`Select condition parameters to pin a unique case (currently ${m.length} matches).`);
   }
 }
 
-async function render(combo) {
+function renderActive() {
+  if (!currentCombo) { clearAll('Select condition parameters to pin a unique case.'); return; }
+  if (route === 'profile') renderProfile(currentCombo, profileJ);
+  else renderContour(currentCombo);
+}
+
+async function renderContour(combo) {
   const seq = ++renderSeq;
-  const variable = document.getElementById('variable').value;
-  const qs = new URLSearchParams();
-  qs.set('variable', variable);
-  for (const p of paramOrder) qs.set(p, String(combo[p]));
+  const qs = buildQuery(combo, null);
   const res = await fetch(`${API}/field?${qs}`);
-  if (seq !== renderSeq) return; // a newer render or clear superseded this one
+  if (seq !== renderSeq) return;
   if (!res.ok) { setStatus(`Load failed (${res.status})`); return; }
   const d = await res.json();
   drawContour(d);
-  setStatus(`${d.variable}${d.unit ? ' (' + d.unit + ')' : ''} · min ${fmt(d.min)} · max ${fmt(d.max)} · case: ${comboText(combo)}`);
+  setStatus(`${d.variable}${unit(d)} · min ${fmt(d.min)} · max ${fmt(d.max)} · case: ${comboText(combo)}`);
+}
+
+async function renderProfile(combo, j) {
+  const seq = ++renderSeq;
+  const qs = buildQuery(combo, schema.y[j]);
+  const res = await fetch(`${API}/field/profile?${qs}`);
+  if (seq !== renderSeq) return;
+  if (!res.ok) { setStatus(`Load failed (${res.status})`); return; }
+  const d = await res.json();
+  drawProfile(d);
+  setStatus(`${d.variable}${unit(d)} · y=${fmt(d.y)} m · min ${fmt(d.min)} · max ${fmt(d.max)} · case: ${comboText(combo)}`);
+}
+
+function buildQuery(combo, y) {
+  const qs = new URLSearchParams();
+  qs.set('variable', document.getElementById('variable').value);
+  for (const p of paramOrder) qs.set(p, String(combo[p]));
+  if (y !== null && y !== undefined) qs.set('y', String(y));
+  return qs;
 }
 
 function drawContour(d) {
@@ -150,7 +209,7 @@ function drawContour(d) {
     x: d.x, y: d.y, z: z2d,
     colorscale: 'Turbo',
     zmin: d.min, zmax: d.max,
-    colorbar: { title: { text: d.variable + (d.unit ? ' (' + d.unit + ')' : '') } },
+    colorbar: { title: { text: d.variable + unit(d) } },
     contours: { coloring: 'heatmap' }
   };
   const layout = {
@@ -162,17 +221,39 @@ function drawContour(d) {
   Plotly.react('plot', [trace], layout, { responsive: true, displaylogo: false });
 }
 
-function clearPlot(msg) {
-  renderSeq++; // invalidate any in-flight render
-  const el = document.getElementById('plot');
-  try { Plotly.purge(el); } catch (e) { /* no plot to purge */ }
-  el.innerHTML = `<div class="placeholder">${msg}</div>`;
+function drawProfile(d) {
+  const trace = {
+    type: 'scatter',
+    mode: 'lines',
+    x: d.x, y: d.v,
+    line: { width: 2 }
+  };
+  const layout = {
+    title: `${d.variable} vs. x  (y = ${fmt(d.y)} m)`,
+    xaxis: { title: 'x (m)' },
+    yaxis: { title: d.variable + unit(d), range: [d.min, d.max] },
+    margin: { l: 70, r: 40, t: 40, b: 50 }
+  };
+  Plotly.react('profile-plot', [trace], layout, { responsive: true, displaylogo: false });
+}
+
+function clearAll(msg) {
+  renderSeq++;
+  for (const id of ['plot', 'profile-plot']) {
+    const el = document.getElementById(id);
+    try { Plotly.purge(el); } catch (e) { /* no plot to purge */ }
+    el.innerHTML = `<div class="placeholder">${msg}</div>`;
+  }
   setStatus(msg);
 }
 
 function comboText(combo) {
   if (!combo) return '';
   return paramOrder.map(p => `${paramShort[p]}=${fmt(combo[p])}`).join(', ');
+}
+
+function unit(d) {
+  return d.unit ? ' (' + d.unit + ')' : '';
 }
 
 function fmt(x) {

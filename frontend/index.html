@@ -3,27 +3,49 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Flame Simulation — 2D Contour Viewer</title>
+  <title>Flame Simulation — Viewer</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 16px; }
-    h2 { margin: 0 0 12px; }
-    .controls { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; margin-bottom: 10px; }
+    h2 { margin: 0 0 8px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; margin-bottom: 6px; }
     .control { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
     .control label { color: #444; }
     select { min-width: 130px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
     #reset { padding: 5px 14px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; cursor: pointer; }
     #reset:hover { background: #e8e8e8; }
+    nav.tabs { margin: 4px 0 8px; }
+    nav.tabs a { margin-right: 18px; text-decoration: none; color: #06c; padding: 4px 2px; font-size: 15px; }
+    nav.tabs a.active { font-weight: 600; border-bottom: 2px solid #06c; }
     #status { color: #555; font-size: 13px; margin: 8px 0; min-height: 18px; }
-    #plot { width: 100%; height: 68vh; }
+    .view { display: none; }
+    .view.active { display: block; }
+    #plot, #profile-plot { width: 100%; height: 64vh; }
     .placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #888; font-size: 15px; }
+    .slider { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; font-size: 13px; }
+    .slider input[type=range] { flex: 1; }
+    .slider .yval { min-width: 130px; color: #333; }
   </style>
 </head>
 <body>
-  <h2>Flame Simulation — 2D Contour Viewer</h2>
+  <h2>Flame Simulation — Viewer</h2>
   <div class="controls" id="controls"></div>
+  <nav class="tabs">
+    <a href="#/contour" id="tab-contour">Contour (2D)</a>
+    <a href="#/profile" id="tab-profile">1D Profile</a>
+  </nav>
   <div id="status">Loading…</div>
-  <div id="plot"></div>
+  <div class="view" id="view-contour">
+    <div id="plot"></div>
+  </div>
+  <div class="view" id="view-profile">
+    <div class="slider">
+      <label for="y-slider">y:</label>
+      <input type="range" id="y-slider" min="0" max="87" step="1" value="44" />
+      <span class="yval" id="y-value">y = — m</span>
+    </div>
+    <div id="profile-plot"></div>
+  </div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

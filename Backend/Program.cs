@@ -17,8 +17,10 @@ var varUnits = new Dictionary<string, string>
     ["Temperature"] = "K", ["Density"] = "kg/m\u00B3", ["U"] = "m/s", ["V"] = "m/s"
 };
 
-// ---- 启动时从 Parquet schema 读取变量清单与网格尺寸（缓存） ----
+// ---- 启动缓存：变量清单 + 网格坐标向量 x/y（几何恒定，各 case 共用） ----
 var fieldNames = new List<string>();
+var xs = new List<double>();
+var ys = new List<double>();
 int NX = 0, NY = 0;
 {
     using var conn = Open();
@@ -36,10 +38,18 @@ int NX = 0, NY = 0;
     }
     using (var cmd = conn.CreateCommand())
     {
-        cmd.CommandText = $"SELECT max(i) + 1, max(j) + 1 FROM read_parquet('{Parquet}')";
+        cmd.CommandText = $"SELECT DISTINCT i, x FROM read_parquet('{Parquet}') ORDER BY i";
         using var r = cmd.ExecuteReader();
-        if (r.Read()) { NX = Convert.ToInt32(r.GetValue(0), CultureInfo.InvariantCulture); NY = Convert.ToInt32(r.GetValue(1), CultureInfo.InvariantCulture); }
+        while (r.Read()) xs.Add(Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture));
     }
+    using (var cmd = conn.CreateCommand())
+    {
+        cmd.CommandText = $"SELECT DISTINCT j, y FROM read_parquet('{Parquet}') ORDER BY j";
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) ys.Add(Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture));
+    }
+    NX = xs.Count;
+    NY = ys.Count;
 }
 Console.WriteLine($"Backend ready: {fieldNames.Count} fields, grid {NX}x{NY}");
 
@@ -52,6 +62,7 @@ app.UseCors(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 app.MapGet("/api/schema", () => Results.Json(new
 {
     nx = NX, ny = NY,
+    x = xs, y = ys,
     parameters = paramNames.Select(p => new { name = p, unit = paramUnits.GetValueOrDefault(p, "") }).ToArray(),
     variables = fieldNames.Select(v => new { name = v, unit = varUnits.GetValueOrDefault(v, "") }).ToArray()
 }));
@@ -74,43 +85,17 @@ app.MapGet("/api/params/values", () =>
     return Results.Json(new { parameters = paramNames, combinations = combos });
 });
 
-// ---- GET /api/field?variable=...&airFlowSLM=...&...&n2MassFraction=... ----
+// ---- GET /api/field (2D contour) ----
 app.MapGet("/api/field", (HttpRequest req) =>
 {
     var variable = req.Query["variable"].ToString();
     if (string.IsNullOrEmpty(variable)) return Results.BadRequest(new { error = "variable is required" });
     if (!fieldNames.Contains(variable)) return Results.BadRequest(new { error = $"unknown variable '{variable}'" });
 
-    var where = new List<string>();
-    var paramVals = new Dictionary<string, double>();
-    foreach (var p in paramNames)
-    {
-        var qv = req.Query[p].ToString();
-        if (string.IsNullOrEmpty(qv)) return Results.BadRequest(new { error = $"missing parameter '{p}'" });
-        if (!double.TryParse(qv, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
-            return Results.BadRequest(new { error = $"invalid parameter '{p}'" });
-        paramVals[p] = d;
-        where.Add($"{Quote(p)} = {d.ToString("R", CultureInfo.InvariantCulture)}");
-    }
-    var whereSql = string.Join(" AND ", where);
+    var (whereSql, paramVals, err) = BuildWhere(req);
+    if (err is not null) return Results.BadRequest(new { error = err });
 
     using var conn = Open();
-
-    var x = new List<double>();
-    using (var cmd = conn.CreateCommand())
-    {
-        cmd.CommandText = $"SELECT DISTINCT i, x FROM read_parquet('{Parquet}') ORDER BY i";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) x.Add(Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture));
-    }
-
-    var y = new List<double>();
-    using (var cmd = conn.CreateCommand())
-    {
-        cmd.CommandText = $"SELECT DISTINCT j, y FROM read_parquet('{Parquet}') ORDER BY j";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) y.Add(Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture));
-    }
 
     var z = new List<double>();
     using (var cmd = conn.CreateCommand())
@@ -120,25 +105,59 @@ app.MapGet("/api/field", (HttpRequest req) =>
         while (r.Read()) z.Add(Convert.ToDouble(r.GetValue(0), CultureInfo.InvariantCulture));
     }
 
-    double mn = 0, mx = 0;
-    using (var cmd = conn.CreateCommand())
-    {
-        cmd.CommandText = $"SELECT min({Quote(variable)}), max({Quote(variable)}) FROM read_parquet('{Parquet}') WHERE {whereSql}";
-        using var r = cmd.ExecuteReader();
-        if (r.Read())
-        {
-            mn = Convert.ToDouble(r.GetValue(0), CultureInfo.InvariantCulture);
-            mx = Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture);
-        }
-    }
+    var (mn, mx) = MinMax(conn, variable, whereSql);
 
     return Results.Json(new
     {
         variable, unit = varUnits.GetValueOrDefault(variable, ""),
         nx = NX, ny = NY,
-        x, y,
+        x = xs, y = ys,
         parameters = paramVals,
         z, min = mn, max = mx
+    });
+});
+
+// ---- GET /api/field/profile (1D slice along x at a given y) ----
+app.MapGet("/api/field/profile", (HttpRequest req) =>
+{
+    var variable = req.Query["variable"].ToString();
+    if (string.IsNullOrEmpty(variable)) return Results.BadRequest(new { error = "variable is required" });
+    if (!fieldNames.Contains(variable)) return Results.BadRequest(new { error = $"unknown variable '{variable}'" });
+
+    var (whereSql, _, err) = BuildWhere(req);
+    if (err is not null) return Results.BadRequest(new { error = err });
+
+    var yStr = req.Query["y"].ToString();
+    if (!double.TryParse(yStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var y0))
+        return Results.BadRequest(new { error = "invalid y" });
+
+    // nearest grid row (rectilinear grid: y depends only on j)
+    int jIdx = 0;
+    double best = double.MaxValue;
+    for (int k = 0; k < ys.Count; k++)
+    {
+        var d = Math.Abs(ys[k] - y0);
+        if (d < best) { best = d; jIdx = k; }
+    }
+
+    using var conn = Open();
+
+    var v = new List<double>();
+    using (var cmd = conn.CreateCommand())
+    {
+        cmd.CommandText = $"SELECT {Quote(variable)} FROM read_parquet('{Parquet}') WHERE {whereSql} AND j = {jIdx} ORDER BY i";
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) v.Add(Convert.ToDouble(r.GetValue(0), CultureInfo.InvariantCulture));
+    }
+
+    var (mn, mx) = MinMax(conn, variable, whereSql); // full-field range for a fixed profile y-axis
+
+    return Results.Json(new
+    {
+        variable, unit = varUnits.GetValueOrDefault(variable, ""),
+        y = ys[jIdx], j = jIdx,
+        x = xs, v,
+        min = mn, max = mx
     });
 });
 
@@ -152,3 +171,30 @@ static DuckDBConnection Open()
 }
 
 static string Quote(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
+
+(string whereSql, Dictionary<string, double> vals, string? error) BuildWhere(HttpRequest req)
+{
+    var where = new List<string>();
+    var vals = new Dictionary<string, double>();
+    foreach (var p in paramNames)
+    {
+        var qv = req.Query[p].ToString();
+        if (string.IsNullOrEmpty(qv)) return ("", vals, $"missing parameter '{p}'");
+        if (!double.TryParse(qv, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+            return ("", vals, $"invalid parameter '{p}'");
+        vals[p] = d;
+        where.Add($"{Quote(p)} = {d.ToString("R", CultureInfo.InvariantCulture)}");
+    }
+    return (string.Join(" AND ", where), vals, null);
+}
+
+(double min, double max) MinMax(DuckDBConnection conn, string variable, string whereSql)
+{
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = $"SELECT min({Quote(variable)}), max({Quote(variable)}) FROM read_parquet('{Parquet}') WHERE {whereSql}";
+    using var r = cmd.ExecuteReader();
+    if (r.Read())
+        return (Convert.ToDouble(r.GetValue(0), CultureInfo.InvariantCulture),
+                Convert.ToDouble(r.GetValue(1), CultureInfo.InvariantCulture));
+    return (0, 0);
+}
