@@ -95,11 +95,10 @@ function matching() {
   return combos.filter(c => paramOrder.every(p => selected[p] === undefined || c[p] === selected[p]));
 }
 
-// Rebuild every dropdown, auto-fill the remaining ones when a unique case is pinned,
-// and render the plot only when exactly one case matches the explicit selections.
+// Rebuild every dropdown, auto-fill any dropdown whose value is uniquely determined
+// by the current selections, and render the plot only when exactly one case matches.
 function sync() {
   const m = matching();
-  const resolved = m.length === 1 ? m[0] : null;
 
   for (const p of paramOrder) {
     const sel = document.getElementById('param-' + p);
@@ -116,12 +115,12 @@ function sync() {
       sel.appendChild(o);
     }
     if (selected[p] !== undefined) sel.value = String(selected[p]);  // explicit pick
-    else if (resolved) sel.value = String(resolved[p]);              // auto-fill (display only)
+    else if (vals.length === 1) sel.value = String(vals[0]);         // uniquely determined → auto-fill (display only)
     else sel.value = '';                                             // any
   }
 
-  if (resolved) {
-    render(resolved);
+  if (m.length === 1) {
+    render(m[0]);
   } else if (m.length === 0) {
     clearPlot('No case matches the selected parameters.');
   } else {
