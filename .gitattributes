@@ -1,0 +1,2 @@
+# Keep raw simulation data byte-exact (no line-ending / text conversion)
+*.dat -text

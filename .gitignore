@@ -12,11 +12,8 @@ dist/
 .vite/
 *.local
 
-# --- Generated data (ETL output) ---
+# --- Generated data (ETL output, regenerable from flame_sim_results) ---
 data/
-
-# --- Large raw simulation inputs (keep 工况设定.xlsx) ---
-flame_sim_results/*.dat
 
 # --- Archify: keep candidate.json and *.html, ignore receipts ---
 .archify/**/*.browser-check.json
