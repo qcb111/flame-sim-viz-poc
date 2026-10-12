@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Flame Simulation Viewer — Feasibility Architecture",
+    "output": ".archify/architecture-flame-feasibility-20261012-234328/flame-feasibility.html",
+    "locale": "en",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "sim-data", "type": "external", "label": "Simulation results", "sublabel": "Tecplot .dat × 7 + xlsx", "pos": [40, 40], "size": [160, 60] },
+    { "id": "etl", "type": "backend", "label": "ETL (C# console)", "sublabel": "one-time build", "pos": [55, 165], "size": [140, 60] },
+    { "id": "parquet", "type": "database", "label": "flame.parquet", "sublabel": "8 param + 54 field columns", "pos": [40, 320], "size": [175, 60] },
+    { "id": "duckdb", "type": "database", "label": "DuckDB", "sublabel": "embedded · in-process", "pos": [310, 320], "size": [140, 60] },
+    { "id": "api", "type": "backend", "label": ".NET Web API", "sublabel": "ASP.NET Core · 3 endpoints", "pos": [610, 320], "size": [165, 60] },
+    { "id": "frontend", "type": "frontend", "label": "Frontend", "sublabel": "Plotly contour + cascade", "pos": [900, 320], "size": [155, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Server (.NET process)", "wraps": ["duckdb", "api"] }
+  ],
+  "connections": [
+    { "id": "sim-to-etl", "from": "sim-data", "to": "etl", "label": "parse · merge 7 cases" },
+    { "id": "etl-to-parquet", "from": "etl", "to": "parquet", "label": "params as columns · 3 dp" },
+    { "id": "parquet-to-duckdb", "from": "parquet", "to": "duckdb", "label": "read_parquet" },
+    { "id": "duckdb-to-api", "from": "duckdb", "to": "api", "label": "column pruning + pushdown", "variant": "emphasis" },
+    { "id": "api-to-frontend", "from": "api", "to": "frontend", "label": "JSON · one field only", "variant": "emphasis" },
+    { "id": "frontend-to-api", "from": "frontend", "to": "api", "label": "GET /api/field (lazy)", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Feasibility — data path", "items": ["Tecplot ASCII → Parquet is a plain-text parse", "DuckDB reads Parquet natively (read_parquet)", "DuckDB.NET.Data.Full 1.5.6 — mature ADO.NET client"] },
+    { "dot": "emerald", "title": "Load one field only", "items": ["Columnar Parquet + projection pushdown", "SELECT x, y, <field> scans just that column", "Frontend fetches only the selected quantity"] },
+    { "dot": "violet", "title": "Sensitivity analysis", "items": ["Condition parameters stored as columns", "SELECT DISTINCT → possible values (from data)", "WHERE params → slice · cascade to unique case"] }
+  ]
+}

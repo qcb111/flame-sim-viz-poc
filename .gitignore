@@ -1,0 +1,30 @@
+# --- .NET ---
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+*.local
+
+# --- Generated data (ETL output) ---
+data/
+
+# --- Large raw simulation inputs (keep 工况设定.xlsx) ---
+flame_sim_results/*.dat
+
+# --- Archify: keep candidate.json and *.html, ignore receipts ---
+.archify/**/*.browser-check.json
+.archify/**/*.delivery.json
+.archify/**/*.finalize.json
+.archify/**/*.finalize-summary.json
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
