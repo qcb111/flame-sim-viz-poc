@@ -21,8 +21,8 @@ const paramShort = {
 
 let schema = null;
 let combos = [];
-let currentCombo = null;
-const selected = {}; // param -> explicitly chosen value (number); undefined = any
+const selected = {}; // param -> explicit user pick (number); undefined = "any"
+let renderSeq = 0;
 
 async function load() {
   const [s, p] = await Promise.all([
@@ -32,8 +32,7 @@ async function load() {
   schema = s;
   combos = p.combinations;
   buildControls();
-  updateCascade();   // populate the 8 condition-parameter dropdowns
-  show(combos[0]);   // show the first case by default
+  sync();
 }
 
 function buildControls() {
@@ -49,7 +48,7 @@ function buildControls() {
     if (v.name === 'Temperature') o.selected = true;
     varSel.appendChild(o);
   }
-  varSel.addEventListener('change', () => { if (currentCombo) show(currentCombo); });
+  varSel.addEventListener('change', () => sync());
   controls.appendChild(wrap('Field', varSel));
 
   for (const p of paramOrder) {
@@ -58,7 +57,7 @@ function buildControls() {
     sel.addEventListener('change', () => {
       const v = sel.value;
       selected[p] = v === '' ? undefined : Number(v);
-      updateCascade();
+      sync();
     });
     controls.appendChild(wrap(paramLabels[p], sel));
   }
@@ -73,8 +72,7 @@ function buildControls() {
 function resetAll() {
   for (const p of paramOrder) selected[p] = undefined;
   document.getElementById('variable').value = 'Temperature';
-  updateCascade();
-  show(combos[0]);
+  sync();
 }
 
 function wrap(label, el) {
@@ -97,50 +95,55 @@ function matching() {
   return combos.filter(c => paramOrder.every(p => selected[p] === undefined || c[p] === selected[p]));
 }
 
-function updateCascade() {
-  for (const p of paramOrder) rebuildOptions(p);
+// Rebuild every dropdown, auto-fill the remaining ones when a unique case is pinned,
+// and render the plot only when exactly one case matches the explicit selections.
+function sync() {
   const m = matching();
-  if (m.length === 1) {
-    show(m[0]);
+  const resolved = m.length === 1 ? m[0] : null;
+
+  for (const p of paramOrder) {
+    const sel = document.getElementById('param-' + p);
+    const vals = availableValues(p);
+    sel.innerHTML = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '— (any)';
+    sel.appendChild(none);
+    for (const v of vals) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = v;
+      sel.appendChild(o);
+    }
+    if (selected[p] !== undefined) sel.value = String(selected[p]);  // explicit pick
+    else if (resolved) sel.value = String(resolved[p]);              // auto-fill (display only)
+    else sel.value = '';                                             // any
+  }
+
+  if (resolved) {
+    render(resolved);
   } else if (m.length === 0) {
-    setStatus('No case matches the selected parameters.');
+    clearPlot('No case matches the selected parameters.');
   } else {
-    setStatus(`Matches ${m.length} case(s) — keep selecting to pin a unique case (showing: ${comboText(currentCombo)})`);
+    clearPlot(`Select condition parameters to pin a unique case (currently ${m.length} matches).`);
   }
 }
 
-function rebuildOptions(p) {
-  const sel = document.getElementById('param-' + p);
-  const cur = sel.value;
-  const vals = availableValues(p);
-  sel.innerHTML = '';
-  const none = document.createElement('option');
-  none.value = '';
-  none.textContent = '— (any)';
-  sel.appendChild(none);
-  for (const v of vals) {
-    const o = document.createElement('option');
-    o.value = v;
-    o.textContent = v;
-    sel.appendChild(o);
-  }
-  if (cur !== '' && vals.includes(Number(cur))) sel.value = cur;
-}
-
-async function show(combo) {
-  currentCombo = combo;
+async function render(combo) {
+  const seq = ++renderSeq;
   const variable = document.getElementById('variable').value;
   const qs = new URLSearchParams();
   qs.set('variable', variable);
   for (const p of paramOrder) qs.set(p, String(combo[p]));
   const res = await fetch(`${API}/field?${qs}`);
+  if (seq !== renderSeq) return; // a newer render or clear superseded this one
   if (!res.ok) { setStatus(`Load failed (${res.status})`); return; }
   const d = await res.json();
-  render(d);
+  drawContour(d);
   setStatus(`${d.variable}${d.unit ? ' (' + d.unit + ')' : ''} · min ${fmt(d.min)} · max ${fmt(d.max)} · case: ${comboText(combo)}`);
 }
 
-function render(d) {
+function drawContour(d) {
   const z2d = [];
   for (let j = 0; j < d.ny; j++) z2d.push(d.z.slice(j * d.nx, (j + 1) * d.nx));
   const trace = {
@@ -158,6 +161,14 @@ function render(d) {
     margin: { l: 70, r: 80, t: 40, b: 50 }
   };
   Plotly.react('plot', [trace], layout, { responsive: true, displaylogo: false });
+}
+
+function clearPlot(msg) {
+  renderSeq++; // invalidate any in-flight render
+  const el = document.getElementById('plot');
+  try { Plotly.purge(el); } catch (e) { /* no plot to purge */ }
+  el.innerHTML = `<div class="placeholder">${msg}</div>`;
+  setStatus(msg);
 }
 
 function comboText(combo) {
